@@ -1,0 +1,6 @@
+{
+  "admin": ["test", "dod", "cart"],
+  "test": ["admin", "dod", "cart"],
+  "dod": ["admin", "test", "cart"],
+  "cart": ["admin", "test", "dod"]
+}

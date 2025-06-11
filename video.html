@@ -1,0 +1,140 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Video Chat</title>
+  <style>
+    video { width: 45%; margin: 2%; background: black; }
+    #controls { position: fixed; bottom: 20px; width: 100%; text-align: center; }
+    button { padding: 10px 20px; margin: 5px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <video id="localVideo" autoplay muted playsinline></video>
+  <video id="remoteVideo" autoplay playsinline></video>
+  <div id="controls">
+    <button onclick="toggleMute()">Mute</button>
+    <button onclick="toggleCamera()">Camera</button>
+    <button onclick="endCall()">Exit</button>
+  </div>
+
+  <script>
+    let localStream, remoteStream, peerConnection;
+    let currentUser = null;
+    const signalingFile = 'signaling.json';
+
+    fetch('session/current.json')
+      .then(response => response.json())
+      .then(data => {
+        currentUser = data.username;
+        startCall();
+      });
+
+    function startCall() {
+      const params = new URLSearchParams(location.search);
+      const targetUser = params.get("with");
+
+      if (!currentUser || !targetUser) {
+        alert("Missing user information.");
+        return;
+      }
+
+      const config = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+      peerConnection = new RTCPeerConnection(config);
+
+      peerConnection.onicecandidate = event => {
+        if (event.candidate) writeSignal({ from: currentUser, to: targetUser, candidate: event.candidate });
+      };
+
+      peerConnection.ontrack = event => {
+        document.getElementById('remoteVideo').srcObject = event.streams[0];
+      };
+
+      navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        .then(stream => {
+          localStream = stream;
+          document.getElementById('localVideo').srcObject = stream;
+          stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
+          initiateSignaling(targetUser);
+        })
+        .catch(err => alert("Camera/Mic error: " + err));
+    }
+
+    function initiateSignaling(targetUser) {
+      writeSignal({ from: currentUser, to: targetUser, type: "offer-request" });
+    async function handleSignal(signal) {
+      switch (signal.type) {
+        case "offer-request":
+          const offer = await peerConnection.createOffer();
+          await peerConnection.setLocalDescription(offer);
+          writeSignal({ from: currentUser, to: signal.from, type: "offer", offer });
+          break;
+        case "offer":
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.offer));
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+          writeSignal({ from: currentUser, to: signal.from, type: "answer", answer });
+          break;
+        case "answer":
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.answer));
+          break;
+        case "candidate":
+          if (signal.candidate) {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          }
+          break;
+      }
+    }
+
+    function toggleMute() {
+      localStream.getAudioTracks()[0].enabled = !localStream.getAudioTracks()[0].enabled;
+    }
+
+    function toggleCamera() {
+      localStream.getVideoTracks()[0].enabled = !localStream.getVideoTracks()[0].enabled;
+    }
+
+    function endCall() {
+      location.href = "main.html";
+    }
+  </script>
+</body>
+</html>
+
+
+function pollSignaling() {
+  setInterval(() => {
+    fetch("signaling.json")
+      .then(res => res.json())
+      .then(signals => {
+        Object.entries(signals || {}).forEach(([sender, targets]) => {
+          Object.entries(targets || {}).forEach(async ([receiver, content]) => {
+            if (receiver === currentUser && sender !== currentUser) {
+              if (content.offer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(content.offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                writeSignal({
+                  from: currentUser,
+                  to: sender,
+                  type: "answer",
+                  answer: answer
+                });
+              }
+              if (content.answer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(content.answer));
+              }
+              if (content.candidate) {
+                try {
+                  await peerConnection.addIceCandidate(new RTCIceCandidate(content.candidate));
+                } catch (e) {
+                  console.error("Failed to add ICE candidate", e);
+                }
+              }
+            }
+          });
+        });
+      });
+  }, 1000);
+}
